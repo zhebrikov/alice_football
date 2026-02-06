@@ -12,7 +12,7 @@ RUN go mod download
 COPY . .
 
 # Собираем бинарник
-RUN go build -o football-alice main.go
+RUN go build -o football-alice cmd/alice/main.go
 
 # Минимальный образ для запуска
 FROM alpine:latest
