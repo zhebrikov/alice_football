@@ -110,7 +110,7 @@ func getFootballNews() string {
 		return "Ошибка обработки новостей."
 	}
 
-	limit := 3
+	limit := 10
 	if len(rss.Channel.Items) < limit {
 		limit = len(rss.Channel.Items)
 	}
