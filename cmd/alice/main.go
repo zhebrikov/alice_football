@@ -4,44 +4,45 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
+	"strings"
+	"time"
 )
 
-// Структуры для парсинга RSS
+// ===== RSS =====
+
 type RSS struct {
 	Channel Channel `xml:"channel"`
 }
 
 type Channel struct {
-	Title string `xml:"title"`
 	Items []Item `xml:"item"`
 }
 
 type Item struct {
 	Title       string `xml:"title"`
-	Link        string `xml:"link"`
 	Description string `xml:"description"`
-	PubDate     string `xml:"pubDate"`
 }
 
-// Структура запроса Алисы
+// ===== Alice =====
+
 type AliceRequest struct {
 	Version string `json:"version"`
+	Session struct {
+		New bool `json:"new"`
+	} `json:"session"`
 	Request struct {
 		Command string `json:"command"`
 		Type    string `json:"type"`
-		Intent  struct {
-			Name string `json:"name"`
-		} `json:"intent"`
 	} `json:"request"`
 }
 
-// Структура ответа Алисы
 type AliceResponse struct {
 	Response struct {
 		Text       string `json:"text"`
+		TTS        string `json:"tts"`
 		EndSession bool   `json:"end_session"`
 	} `json:"response"`
 	Version string `json:"version"`
@@ -50,71 +51,81 @@ type AliceResponse struct {
 const RSS_URL = "https://www.championat.com/rss/news/football"
 
 func main() {
-	http.HandleFunc("/webhook", func(w http.ResponseWriter, r *http.Request) {
-		var req AliceRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
+	http.HandleFunc("/webhook", aliceHandler)
 
-		var responseText string
-
-		switch req.Request.Type {
-		case "LaunchRequest":
-			responseText = "Привет! Я могу рассказать последние футбольные новости. Скажи 'новости футбола'."
-		case "IntentRequest":
-			switch req.Request.Intent.Name {
-			case "GetFootballNews":
-				responseText = getFootballNews()
-			default:
-				responseText = "Извини, я не понимаю этот запрос."
-			}
-		default:
-			responseText = "Неизвестный тип запроса."
-		}
-
-		resp := AliceResponse{
-			Version: "1.0",
-		}
-		resp.Response.Text = responseText
-		resp.Response.EndSession = false
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
-	})
-
-	fmt.Println("Сервер запущен на :8080")
+	log.Println("Alice webhook started")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
+func aliceHandler(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	log.Println("REQUEST:", string(body))
+
+	var req AliceRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	command := strings.ToLower(req.Request.Command)
+	var text string
+
+	switch {
+	case req.Session.New:
+		text = "Привет! Я могу рассказать последние футбольные новости. Скажи: новости футбола."
+
+	case strings.Contains(command, "новост") && strings.Contains(command, "футбол"):
+		text = getFootballNews()
+
+	default:
+		text = "Скажи: расскажи новости футбола."
+	}
+
+	resp := AliceResponse{Version: "1.0"}
+	resp.Response.Text = text
+	resp.Response.TTS = sanitizeForTTS(text)
+	resp.Response.EndSession = false
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// ===== News =====
+
 func getFootballNews() string {
-	resp, err := http.Get(RSS_URL)
+	client := http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(RSS_URL)
 	if err != nil {
-		return "Не удалось получить новости."
+		return "Не удалось получить футбольные новости."
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "Не удалось прочитать новости."
+		return "Ошибка чтения новостей."
 	}
 
 	var rss RSS
 	if err := xml.Unmarshal(body, &rss); err != nil {
-		return "Не удалось распарсить новости."
+		return "Ошибка обработки новостей."
 	}
 
-	newsCount := 10
-	if len(rss.Channel.Items) < newsCount {
-		newsCount = len(rss.Channel.Items)
+	limit := 3
+	if len(rss.Channel.Items) < limit {
+		limit = len(rss.Channel.Items)
 	}
 
-	newsText := "Вот последние новости футбола:\n"
-	for i := 0; i < newsCount; i++ {
-		item := rss.Channel.Items[i]
-		// Сокращаем описание для озвучки
-		newsText += fmt.Sprintf("%d. %s. %s\n", i+1, item.Title, item.Description)
+	result := "Вот последние новости футбола. "
+	for i := 0; i < limit; i++ {
+		result += fmt.Sprintf("%d. %s. ", i+1, rss.Channel.Items[i].Title)
 	}
 
-	return newsText
+	return result
+}
+
+// Убираем мусор для голосовой озвучки
+func sanitizeForTTS(text string) string {
+	text = strings.ReplaceAll(text, "\n", " ")
+	text = strings.ReplaceAll(text, "&nbsp;", " ")
+	return text
 }
